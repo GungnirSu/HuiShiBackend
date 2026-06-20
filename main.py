@@ -6,16 +6,29 @@ from fastapi.responses import StreamingResponse
 import dashscope
 from core.config import API_KEY
 from models.database import SessionLocal, VisionLog, init_db
-from routers.navigation import router as navigation_router
+
+from api.speech import router as speech_router
+from api.navigation import router as nav_router
+from api.travel import router as travel_router
+
+# main.py 头部新增导入
+import os
+from fastapi.staticfiles import StaticFiles
 
 # 初始化 FastAPI 应用
-app = FastAPI(title="HuiVision 慧视后端", version="1.2.0")
+app = FastAPI(title="HuiVision 慧视后端", version="1.1.0")
+
+app.include_router(speech_router)
+app.include_router(nav_router)
+app.include_router(travel_router)
+
+if not os.path.exists("static"):
+    os.makedirs("static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 任务 4.2: 启动时初始化数据库表
 init_db()
 dashscope.api_key = API_KEY
-
-app.include_router(navigation_router)
 
 
 @app.post("/v1/vision/analyze")
@@ -26,17 +39,22 @@ async def analyze_scene(file: UploadFile = File(...)):
     """
     request_id = str(uuid.uuid4())  # 生成本次请求的唯一 ID [cite: 87]
     start_time = time.time()
+    print(f"[vision] start ts={start_time:.3f} req_id={request_id}")
 
     # 读取图片并转为 Base64
     content = await file.read()
     if not content:
+        print(f"[vision] !!! 空图片")
         raise HTTPException(status_code=400, detail="图片上传失败")
     base64_image = base64.b64encode(content).decode("utf-8")
+    print(f"[vision] file read +{(time.time() - start_time)*1000:.0f}ms size={len(content)/1024:.1f}KB b64={len(base64_image)/1024:.1f}KB")
 
     async def event_generator():
         full_content = ""  # 存储 AI 返回的完整文本
         first_token_time = None  # 记录首字生成的时间点
 
+        t_model_start = time.time()
+        print(f"[vision] model call start +{(t_model_start - start_time)*1000:.0f}ms")
         # --- 修复 NameError 的关键：确保在这里定义 responses ---
         responses = dashscope.MultiModalConversation.call(
             model='qwen-vl-plus',
@@ -59,10 +77,12 @@ async def analyze_scene(file: UploadFile = File(...)):
                 # 记录首字延迟
                 if not first_token_time and new_content:
                     first_token_time = time.time()
+                    print(f"[vision] first token +{(first_token_time - start_time)*1000:.0f}ms")
 
                 if new_content:
                     yield new_content
             else:
+                print(f"[vision] !!! 流式错误 status={response.status_code} msg={response.message}")
                 yield f"Error: {response.message}"
 
         # --- 任务 1.1 & 4.2: 计算量化指标并存入数据库 ---
@@ -83,7 +103,7 @@ async def analyze_scene(file: UploadFile = File(...)):
             )
             db.add(log_entry)
             db.commit()
-            print(f"日志已存库: ReqID={request_id}, 首字延迟={first_latency:.2f}ms")
+            print(f"[vision] DONE total={total_latency:.0f}ms first_token={first_latency:.0f}ms req_id={request_id}")
         except Exception as e:
             print(f"数据库写入失败: {e}")
         finally:
@@ -91,7 +111,7 @@ async def analyze_scene(file: UploadFile = File(...)):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# http://127.0.0.1:8000/docs
+
 if __name__ == "__main__":
     import uvicorn
 

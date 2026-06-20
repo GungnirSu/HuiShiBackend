@@ -15,3 +15,8 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# 屏蔽环境密钥文件
+.env
+*.env
+.env.*
